@@ -1,0 +1,5 @@
+source "share/sysbuild/Kconfig"
+
+# On multi-core SoCs (nRF5340) this builds the Bluetooth controller image for the network core.
+config NRF_DEFAULT_BLUETOOTH
+	default y
