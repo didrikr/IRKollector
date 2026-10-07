@@ -1,0 +1,128 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  NCS_VERSION: v3.3.0
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/nrfconnect/sdk-nrf-toolchain:v3.3.0
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: nrf52dk,         board: nrf52dk/nrf52832 }
+          - { name: nrf52840dk,      board: nrf52840dk/nrf52840 }
+          - { name: nrf52840dongle,  board: nrf52840dongle/nrf52840 }
+          - { name: nrf5340dk,       board: nrf5340dk/nrf5340/cpuapp }
+          - { name: nrf7002dk,       board: nrf7002dk/nrf5340/cpuapp }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+
+      # The app is freestanding: fetch the NCS workspace next to it.
+      - name: Cache NCS workspace
+        id: ncs-cache
+        uses: actions/cache@v4
+        with:
+          path: ncs
+          key: ncs-${{ env.NCS_VERSION }}
+
+      - name: Fetch NCS
+        if: steps.ncs-cache.outputs.cache-hit != 'true'
+        run: |
+          west init -m https://github.com/nrfconnect/sdk-nrf --mr "$NCS_VERSION" ncs
+          cd ncs
+          west update --narrow -o=--depth=1 -o=--filter=tree:0
+
+      - name: Build
+        run: |
+          cd ncs
+          west config manifest.path nrf
+          west zephyr-export
+          west build -p -b "${{ matrix.board }}" \
+            -d "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/app" \
+            > "$GITHUB_WORKSPACE/build.log" 2>&1 || { tail -n 100 "$GITHUB_WORKSPACE/build.log"; exit 1; }
+          tail -n 30 "$GITHUB_WORKSPACE/build.log"
+
+      - name: Collect hex files
+        run: |
+          mkdir dist
+          # Single-core chips: the app hex. nRF5340: merged.hex holds app + network core.
+          if [ -f build/merged.hex ]; then
+            cp build/merged.hex "dist/IRKollector-${{ matrix.name }}.hex"
+          else
+            cp build/IRKollector/zephyr/zephyr.hex "dist/IRKollector-${{ matrix.name }}.hex"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hex-${{ matrix.name }}
+          path: dist/*.hex
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: buildlog-${{ matrix.name }}
+          path: build.log
+
+  dongle-dfu:
+    name: Dongle DFU bundle
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hex-nrf52840dongle
+          path: in
+
+      - name: Install nrfutil with nrf5sdk-tools
+        run: |
+          curl -fsSL -o nrfutil \
+            https://files.nordicsemi.com/artifactory/swtools/external/nrfutil/executables/x86_64-unknown-linux-gnu/nrfutil
+          chmod +x nrfutil
+          ./nrfutil install nrf5sdk-tools
+
+      - name: Generate DFU package
+        run: |
+          mkdir dist
+          ./nrfutil nrf5sdk-tools pkg generate \
+            --hw-version 52 --sd-req=0x00 \
+            --application in/IRKollector-nrf52840dongle.hex \
+            --application-version 1 \
+            dist/IRKollector-nrf52840dongle-dfu.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dfu-nrf52840dongle
+          path: dist/*.zip
+
+  release:
+    name: Attach to release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, dongle-dfu]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.hex
+            artifacts/*.zip
