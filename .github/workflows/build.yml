@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: app
+          path: IRKollector
 
       # The app is freestanding: fetch the NCS workspace next to it.
       - name: Cache NCS workspace
@@ -56,7 +56,7 @@ jobs:
           west config manifest.path nrf
           west zephyr-export
           west build -p -b "${{ matrix.board }}" \
-            -d "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/app" \
+            -d "$GITHUB_WORKSPACE/build" "$GITHUB_WORKSPACE/IRKollector" \
             > "$GITHUB_WORKSPACE/build.log" 2>&1 || { tail -n 100 "$GITHUB_WORKSPACE/build.log"; exit 1; }
           tail -n 30 "$GITHUB_WORKSPACE/build.log"
 
